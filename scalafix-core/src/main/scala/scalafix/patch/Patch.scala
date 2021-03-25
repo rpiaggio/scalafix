@@ -160,9 +160,10 @@ object Patch {
     )
 
   private[scalafix] object internal {
-    trait LowLevelPatch
+    abstract class SinglePatch extends Patch
+    sealed trait LowLevelPatch
     abstract class TokenPatch(val tok: Token, val newTok: String)
-        extends Patch
+        extends SinglePatch
         with LowLevelPatch {
       override def toString: String =
         if (newTok.isEmpty)
@@ -180,7 +181,7 @@ object Patch {
           tok,
           s"""$addLeft${if (keepTok) tok else ""}$addRight"""
         )
-    abstract class TreePatch extends Patch
+    abstract class TreePatch extends SinglePatch
     abstract class ImportPatch extends TreePatch
     case class RemoveGlobalImport(symbol: v0.Symbol) extends ImportPatch
     case class RemoveImportee(importee: Importee) extends ImportPatch
@@ -188,9 +189,28 @@ object Patch {
     case class AddGlobalSymbol(symbol: v0.Symbol) extends ImportPatch
     case class ReplaceSymbol(from: v0.Symbol.Global, to: v0.Symbol.Global)
         extends TreePatch
-    case class AtomicPatch(underlying: Patch) extends Patch
-    case class LintPatch(message: Diagnostic) extends Patch
-    case class Concat(a: Patch, b: Patch) extends Patch
-    case object EmptyPatch extends Patch with LowLevelPatch
+    case class AtomicPatch(underlying: Patch) extends SinglePatch
+    case class LintPatch(message: Diagnostic) extends SinglePatch
+    case class Concat(patches: List[SinglePatch]) extends Patch
+    object Concat {
+      def apply(left: Patch, right: Patch): Concat =
+        left match {
+          case singleLeft: SinglePatch =>
+            right match {
+              case singleRight: SinglePatch =>
+                Concat(List(singleLeft, singleRight))
+              case Concat(rightList) =>
+                Concat(singleLeft +: rightList)
+            }
+          case Concat(leftList) =>
+            right match {
+              case singleRight: SinglePatch =>
+                Concat(leftList :+ singleRight)
+              case Concat(rightList) =>
+                Concat(leftList ++ rightList)
+            }
+        }
+    }
+    case object EmptyPatch extends SinglePatch with LowLevelPatch
   }
 }

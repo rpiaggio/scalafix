@@ -22,6 +22,7 @@ import scalafix.util.TreeExtractors.Mods
 import scalafix.v0._
 // used to cross-compile
 import scala.collection.compat._ // scalafix:ok
+import scala.util.control.TailCalls._
 
 /**
  * EscapeHatch is an algorithm to selectively disable rules. There
@@ -75,35 +76,43 @@ class EscapeHatch private (
           !enabled
       }
 
-    def loop(name: RuleName, patch: Patch): Patch = patch match {
-      case ap @ AtomicPatch(underlying) =>
-        val hasDisabledPatch =
-          PatchInternals.treePatchApply(underlying).exists { tp =>
-            val byGit = diffDisable.isDisabled(tp.tok.pos)
-            val byEscape = isDisabledByEscape(name, tp.tok.pos.start)
-            byGit || byEscape
+    def loop(name: RuleName, patch: Patch): TailRec[Patch] =
+      patch match {
+        case ap: AtomicPatch =>
+          val hasDisabledPatch =
+            PatchInternals.treePatchApply(ap.underlying).exists { tp =>
+              val byGit = diffDisable.isDisabled(tp.tok.pos)
+              val byEscape = isDisabledByEscape(name, tp.tok.pos.start)
+              byGit || byEscape
+            }
+          done(if (hasDisabledPatch) EmptyPatch else ap)
+
+        case Concat(Nil) =>
+          done(EmptyPatch)
+
+        case Concat(head :: tail) =>
+          for {
+            h <- tailcall(loop(name, head))
+            t <- tailcall(loop(name, Concat(tail)))
+          } yield Concat(h, t)
+
+        case LintPatch(lint) =>
+          val byGit = diffDisable.isDisabled(lint.position)
+          val id = lint.fullStringID(name)
+          val byEscape = isDisabledByEscape(id, lint.position.start)
+          val isLintDisabled = byGit || byEscape
+
+          if (!isLintDisabled) {
+            lintMessages += lint.toDiagnostic(name, ctx.config)
           }
-        if (hasDisabledPatch) EmptyPatch else ap
 
-      case Concat(a, b) => Concat(loop(name, a), loop(name, b))
+          done(EmptyPatch)
 
-      case LintPatch(lint) =>
-        val byGit = diffDisable.isDisabled(lint.position)
-        val id = lint.fullStringID(name)
-        val byEscape = isDisabledByEscape(id, lint.position.start)
-        val isLintDisabled = byGit || byEscape
-
-        if (!isLintDisabled) {
-          lintMessages += lint.toDiagnostic(name, ctx.config)
-        }
-
-        EmptyPatch
-
-      case e => e
-    }
+        case e => done(e)
+      }
 
     val patches = patchesByName.map { case (name, patch) =>
-      loop(name, patch)
+      loop(name, patch).result
     }
     val unusedWarnings =
       (annotatedEscapes.unusedEscapes(usedEscapes) ++

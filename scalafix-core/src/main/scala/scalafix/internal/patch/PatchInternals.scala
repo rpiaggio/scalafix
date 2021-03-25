@@ -1,5 +1,7 @@
 package scalafix.internal.patch
 
+import scala.util.control.TailCalls._
+
 import scala.meta._
 
 import scalafix.internal.diff.DiffUtils
@@ -184,30 +186,33 @@ object PatchInternals {
     patch.isEmpty || hasLintMessage && onlyLint
   }
 
-  private def foreach(patch: Patch)(f: Patch => Unit): Unit = {
-    def loop(patch: Patch): Unit = patch match {
-      case Concat(a, b) =>
-        loop(a)
-        loop(b)
+  private def foreach(patch: Patch)(f: SinglePatch => Unit): Unit = {
+    def loop(patch: Patch): TailRec[Unit] = patch match {
+      case Concat(Nil) =>
+        done(())
+      case Concat(head :: tail) =>
+        for {
+          _ <- tailcall(loop(head))
+          _ <- tailcall(loop(Concat(tail)))
+        } yield ()
       case EmptyPatch =>
-        ()
+        done(())
       case AtomicPatch(underlying) =>
-        loop(underlying)
-      case els =>
-        f(els)
+        tailcall(loop(underlying))
+      case els: SinglePatch =>
+        done(f(els))
     }
-    loop(patch)
+    loop(patch).result
   }
 
   // don't decompose Atomic Patch
   private[scalafix] def foreachPatchUnit(
       patch: Patch
-  )(f: Patch => Unit): Unit = {
+  )(f: SinglePatch => Unit): Unit = {
     def loop(patch: Patch): Unit = patch match {
-      case Concat(a, b) =>
-        loop(a)
-        loop(b)
-      case els =>
+      case Concat(patches) =>
+        patches.foreach(f)
+      case els: SinglePatch =>
         f(els)
     }
     loop(patch)

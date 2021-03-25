@@ -163,7 +163,7 @@ class PatchSuite extends AbstractSyntacticRuleSuite with AnyFunSuiteLike {
     val atomicPatch = PatchInternals.getPatchUnits(patch)
     assert(atomicPatch.length == 1)
     atomicPatch.head match {
-      case AtomicPatch(Concat(patch1, patch2)) =>
+      case AtomicPatch(Concat(patch1 :: patch2 :: Nil)) =>
         assert(patch1.isInstanceOf[Add])
         assert(patch2.isInstanceOf[Add])
       case _ =>
